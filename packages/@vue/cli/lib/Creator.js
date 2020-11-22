@@ -51,12 +51,15 @@ module.exports = class Creator extends EventEmitter {
 
     this.name = name
     this.context = process.env.VUE_CLI_CONTEXT = context
+
+    // 提前注入prompts
+    // 例如选择 vue-2 vue-3 还是自定义模版
     const { presetPrompt, featurePrompt } = this.resolveIntroPrompts()
 
-    this.presetPrompt = presetPrompt
-    this.featurePrompt = featurePrompt
-    this.outroPrompts = this.resolveOutroPrompts()
-    this.injectedPrompts = []
+    this.presetPrompt = presetPrompt                //  选择哪一个自定义(preset)模版(每次创建完一个项目会询问是否保存为模版)
+    this.featurePrompt = featurePrompt              //  typescript eslint vuex vue-router等特性配置 是否选中
+    this.outroPrompts = this.resolveOutroPrompts()  //  创建完项目后询问是否创建为一个预设和是否配置为eslint babel等配置单独文件
+    this.injectedPrompts = []                       // 注入的prompts
     this.promptCompleteCbs = []
     this.afterInvokeCbs = []
     this.afterAnyInvokeCbs = []
@@ -64,12 +67,21 @@ module.exports = class Creator extends EventEmitter {
     this.run = this.run.bind(this)
 
     const promptAPI = new PromptModuleAPI(this)
+    // 这里其实是为了将 vuex vue-router 等配置项 以inquirer和choices形式注入到 injectedPrompts 和 featurePrompt
+    // 也就是在创建项目的时候会询问 是否需要vuex vue-router eslint等配置
+    // 主要目的是为了配置 inquirer
+
+    // vuex等配置 函数数组(用于注入prompts features)
+    // 包括执行 prompt 之后的回调函数
+    console.log('promptModules', promptModules)
     promptModules.forEach(m => m(promptAPI))
   }
 
   async create (cliOptions = {}, preset = null) {
     const isTestOrDebug = process.env.VUE_CLI_TEST || process.env.VUE_CLI_DEBUG
     const { run, name, context, afterInvokeCbs, afterAnyInvokeCbs } = this
+
+    console.log({ cliOptions, preset })
 
     if (!preset) {
       if (cliOptions.preset) {
@@ -90,6 +102,9 @@ module.exports = class Creator extends EventEmitter {
         preset = await this.promptAndResolvePreset()
       }
     }
+
+    // 选择完后的 preset
+    console.log('preset...', preset)
 
     // clone before mutating
     preset = cloneDeep(preset)
@@ -151,6 +166,8 @@ module.exports = class Creator extends EventEmitter {
       ...resolvePkg(context)
     }
     const deps = Object.keys(preset.plugins)
+
+    // 写入依赖
     deps.forEach(dep => {
       if (preset.plugins[dep]._isPreset) {
         return
@@ -199,16 +216,17 @@ module.exports = class Creator extends EventEmitter {
     log()
     this.emit('creation', { event: 'plugins-install' })
 
-    if (isTestOrDebug && !process.env.VUE_CLI_TEST_DO_INSTALL_PLUGIN) {
-      // in development, avoid installation process
-      await require('./util/setupDevProject')(context)
-    } else {
-      await pm.install()
-    }
+    // if (isTestOrDebug && !process.env.VUE_CLI_TEST_DO_INSTALL_PLUGIN) {
+    //   // in development, avoid installation process
+    //   await require('./util/setupDevProject')(context)
+    // } else {
+    //   await pm.install()
+    // }
 
     // run generator
     log(`🚀  Invoking generators...`)
     this.emit('creation', { event: 'invoking-generators' })
+    // TODO: 这里 resolvePlugins 需要重点看
     const plugins = await this.resolvePlugins(preset.plugins, pkg)
     const generator = new Generator(context, {
       pkg,
@@ -219,6 +237,8 @@ module.exports = class Creator extends EventEmitter {
     await generator.generate({
       extractConfigFiles: preset.useConfigFiles
     })
+    // TODO: 上次看到这里了
+    // return ''
 
     // install additional deps (injected by generators)
     log(`📦  Installing additional dependencies...`)
@@ -292,11 +312,24 @@ module.exports = class Creator extends EventEmitter {
     return execa(command, args, { cwd: this.context })
   }
 
+  // prompt询问 （选择vue版本 typescript等配置）得到配置项答案
   async promptAndResolvePreset (answers = null) {
     // prompt
     if (!answers) {
       await clearConsole(true)
       answers = await inquirer.prompt(this.resolveFinalPrompts())
+      // {
+      //   answers: {
+      //     preset: '__manual__',
+      //     features: [ 'vueVersion', 'babel', 'router', 'linter' ],
+      //     vueVersion: '2',
+      //     historyMode: true,
+      //     eslintConfig: 'base',
+      //     lintOn: [ 'save' ],
+      //     useConfigFiles: 'files',
+      //     save: false
+      //   }
+      // }
     }
     debug('vue-cli:answers')(answers)
 
@@ -307,16 +340,22 @@ module.exports = class Creator extends EventEmitter {
     }
 
     let preset
+    // 选择的是否为取原有模板(preset)
     if (answers.preset && answers.preset !== '__manual__') {
       preset = await this.resolvePreset(answers.preset)
     } else {
+      // 手动配置
       // manual
       preset = {
         useConfigFiles: answers.useConfigFiles === 'files',
         plugins: {}
       }
       answers.features = answers.features || []
+      console.log('promptCompleteCbs', this.promptCompleteCbs)
       // run cb registered by prompt modules to finalize the preset
+      // 这里将 prompt 所有 module 的回调函数执行
+      // 例如 router 就执行 promptModules/router 的回调函数
+      // 主要是在 回调函数中给 preset 的 plugins 进行赋值
       this.promptCompleteCbs.forEach(cb => cb(answers, preset))
     }
 
@@ -400,13 +439,17 @@ module.exports = class Creator extends EventEmitter {
     return plugins
   }
 
+  // 获取预设配置好的项目
   getPresets () {
     const savedOptions = loadOptions()
     return Object.assign({}, savedOptions.presets, defaults.presets)
   }
 
+  // 初始化 prompts
+  // 询问选用已作预设的项目模版还是自定义
   resolveIntroPrompts () {
     const presets = this.getPresets()
+
     const presetChoices = Object.entries(presets).map(([name, preset]) => {
       let displayName = name
       if (name === 'default') {
@@ -446,6 +489,8 @@ module.exports = class Creator extends EventEmitter {
     }
   }
 
+  // 是否将 babel eslint 等文件配置为单独文件
+  // 是否保存为一个 preset
   resolveOutroPrompts () {
     const outroPrompts = [
       {
@@ -517,6 +562,7 @@ module.exports = class Creator extends EventEmitter {
     return outroPrompts
   }
 
+  // 决定最终的 propmts
   resolveFinalPrompts () {
     // patch generator-injected prompts to only show in manual mode
     this.injectedPrompts.forEach(prompt => {
@@ -536,6 +582,7 @@ module.exports = class Creator extends EventEmitter {
     return prompts
   }
 
+  // 是否需要初始化git
   shouldInitGit (cliOptions) {
     if (!hasGit()) {
       return false

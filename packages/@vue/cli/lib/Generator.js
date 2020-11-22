@@ -121,13 +121,16 @@ module.exports = class Generator {
   }
 
   async initPlugins () {
+    console.log('plugins...', this.plugins)
     const { rootOptions, invoking } = this
     const pluginIds = this.plugins.map(p => p.id)
 
     // apply hooks from all plugins
     for (const id of this.allPluginIds) {
       const api = new GeneratorAPI(id, this, {}, rootOptions)
+      // 跑到对面的 cli-plugin-xxx 的generator文件夹
       const pluginGenerator = loadModule(`${id}/generator`, this.context)
+      console.log('pluginGenerator...', pluginGenerator)
 
       if (pluginGenerator && pluginGenerator.hooks) {
         await pluginGenerator.hooks(api, {}, rootOptions, pluginIds)
@@ -264,6 +267,7 @@ module.exports = class Generator {
 
   async resolveFiles () {
     const files = this.files
+    console.log('files...', files)
     for (const middleware of this.fileMiddlewares) {
       await middleware(files, ejs.render)
     }
